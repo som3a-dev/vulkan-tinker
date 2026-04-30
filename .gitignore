@@ -1,0 +1,6 @@
+/.vs
+/.vscode
+/out
+assets/shaders/vert.spv
+assets/shaders/frag.spv
+assets/shaders/compile.bat
