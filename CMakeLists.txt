@@ -17,6 +17,7 @@ target_link_libraries(vulkan-tinker PRIVATE glfw)
 target_link_libraries(vulkan-tinker PRIVATE Vulkan::Vulkan)
 target_link_libraries(vulkan-tinker PRIVATE glm::glm)
 target_include_directories(vulkan-tinker PRIVATE ${Stb_INCLUDE_DIR})
+target_include_directories(vulkan-tinker PRIVATE vendor)
 
 if (CMAKE_VERSION VERSION_GREATER 3.12)
   set_property(TARGET vulkan-tinker PROPERTY CXX_STANDARD 20)

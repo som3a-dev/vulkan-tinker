@@ -17,8 +17,14 @@
 #include <glm/ext.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
+#define GLM_ENABLE_EXPERIMENTAL
+#include <glm/gtx/hash.hpp>
+
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
+
+#define TINYOBJLOADER_IMPLEMENTATION
+#include <tiny_obj_loader.h>
 
 #include <chrono>
 #include <iostream>
@@ -33,6 +39,74 @@
 
 static void initCRTDbg();
 
+struct vertex_t
+{
+	glm::vec3 pos;
+	glm::vec3 color;
+	glm::vec2 texCoord;
+
+	static const int attributeCount = 3;
+
+	static VkVertexInputBindingDescription getBindingDescription()
+	{
+		VkVertexInputBindingDescription bindingDescription{};
+		bindingDescription.binding = 0;
+		bindingDescription.stride = sizeof(vertex_t);
+		bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+		return bindingDescription;
+	}
+
+	static std::array<VkVertexInputAttributeDescription, attributeCount> getAttributeDescriptions()
+	{
+		std::array<VkVertexInputAttributeDescription, attributeCount> attributes{};
+
+		{
+			attributes[0].location = 0;
+			attributes[0].binding = 0;
+			attributes[0].offset = offsetof(vertex_t, pos);
+			attributes[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+		}
+		{
+			attributes[1].location = 1;
+			attributes[1].binding = 0;
+			attributes[1].offset = offsetof(vertex_t, color);
+			attributes[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+		}
+		{
+			attributes[2].location = 2;
+			attributes[2].binding = 0;
+			attributes[2].offset = offsetof(vertex_t, texCoord);
+			attributes[2].format = VK_FORMAT_R32G32_SFLOAT;
+		}
+
+		return attributes;
+	}
+
+	bool operator==(const vertex_t& other) const
+	{
+		return pos == other.pos && color == other.color && texCoord == other.texCoord;
+	}
+};
+
+// uniform buffer object
+struct ubo_t
+{
+	glm::mat4 model;
+	glm::mat4 view;
+	glm::mat4 proj;
+};
+
+namespace std {
+	template<> struct hash<vertex_t> {
+		size_t operator()(vertex_t const& vertex) const {
+			return ((hash<glm::vec3>()(vertex.pos) ^
+				(hash<glm::vec3>()(vertex.color) << 1)) >> 1) ^
+				(hash<glm::vec2>()(vertex.texCoord) << 1);
+		}
+	};
+}
+
 class App
 {
 public:
@@ -45,76 +119,8 @@ public:
 	}
 
 private:
-
-	// uniform buffer object
-	struct ubo_t
-	{
-		glm::mat4 model;
-		glm::mat4 view;
-		glm::mat4 proj;
-	};
-
-	struct vertex_t
-	{
-		glm::vec3 pos;
-		glm::vec3 color;
-		glm::vec2 texCoord;
-
-		static const int attributeCount = 3;
-
-		static VkVertexInputBindingDescription getBindingDescription()
-		{
-			VkVertexInputBindingDescription bindingDescription{};
-			bindingDescription.binding = 0;
-			bindingDescription.stride = sizeof(vertex_t);
-			bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-
-			return bindingDescription;
-		}
-
-		static std::array<VkVertexInputAttributeDescription, attributeCount> getAttributeDescriptions()
-		{
-			std::array<VkVertexInputAttributeDescription, attributeCount> attributes{};
-
-			{
-				attributes[0].location = 0;
-				attributes[0].binding = 0;
-				attributes[0].offset = offsetof(vertex_t, pos);
-				attributes[0].format = VK_FORMAT_R32G32B32_SFLOAT;
-			}
-			{
-				attributes[1].location = 1;
-				attributes[1].binding = 0;
-				attributes[1].offset = offsetof(vertex_t, color);
-				attributes[1].format = VK_FORMAT_R32G32B32_SFLOAT;
-			}
-			{
-				attributes[2].location = 2;
-				attributes[2].binding = 0;
-				attributes[2].offset = offsetof(vertex_t, texCoord);
-				attributes[2].format = VK_FORMAT_R32G32_SFLOAT;
-			}
-
-			return attributes;
-		}
-	};
-
-	const std::vector<vertex_t> vertices = {
-	{{-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
-	{{0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
-	{{0.5f, 0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
-	{{-0.5f, 0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}},
-
-	{{-0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
-	{{0.5f, -0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
-	{{0.5f, 0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
-	{{-0.5f, 0.5f, -0.5f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}}
-	};
-
-	const std::vector<uint16_t> indices = {
-	0, 1, 2, 2, 3, 0,
-	4, 5, 6, 6, 7, 4
-	};
+	std::vector<vertex_t> vertices;
+	std::vector<uint32_t> indices;
 
 	static const uint32_t framesInFlight = 3;
 
@@ -235,6 +241,8 @@ private:
 
 	void initVulkan()
 	{
+		loadModel();
+
 		createInstance();
 		createSurface();
 
@@ -267,6 +275,50 @@ private:
 
 		createCommandBuffers();
 		createSyncObjects();
+	}
+
+	void loadModel()
+	{
+		tinyobj::attrib_t attrib;
+		std::vector<tinyobj::shape_t> shapes;
+		std::vector<tinyobj::material_t> materials;
+		std::string err;
+
+		if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &err,
+			"assets/models/viking_room.obj"))
+		{
+			throw std::runtime_error(err);
+		}
+
+		// TODO(omar): the unique vertex check is O(N)
+		std::unordered_map<vertex_t, uint32_t> uniqueVertices{};
+
+		for (const tinyobj::shape_t& shape : shapes)		
+		{
+			for (const tinyobj::index_t& index : shape.mesh.indices)
+			{
+				vertex_t vertex{};
+
+				vertex.pos.x = attrib.vertices[3 * index.vertex_index + 0];
+				vertex.pos.y = attrib.vertices[3 * index.vertex_index + 1];
+				vertex.pos.z = attrib.vertices[3 * index.vertex_index + 2];
+
+				vertex.texCoord.x = attrib.texcoords[2 * index.texcoord_index + 0];
+				vertex.texCoord.y = 1.0f - attrib.texcoords[2 * index.texcoord_index + 1];
+
+				vertex.color = {1.0f, 1.0f, 1.0f};
+
+				if (uniqueVertices.count(vertex) == 0)
+				{
+					uniqueVertices[vertex] = (uint32_t)(vertices.size());
+					vertices.push_back(vertex);
+				}
+
+				indices.push_back(uniqueVertices[vertex]);
+			}
+		}
+
+		std::cout << vertices.size() * sizeof(vertex_t) << std::endl;
 	}
 
 	void createDepthResources()
@@ -375,7 +427,7 @@ private:
 
 	void createTexture() {
 		int texWidth, texHeight, texChannels;
-		stbi_uc* pixels = stbi_load("assets/textures/texture.jpg",
+		stbi_uc* pixels = stbi_load("assets/textures/viking_room.png",
 		&texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
 		if (!pixels) {
 			throw std::runtime_error("failed to load texture image");
@@ -920,7 +972,7 @@ private:
 		vkCmdBindVertexBuffers(commandBuffer, 0,
 		sizeof(vertexBuffers) / sizeof(VkBuffer), vertexBuffers, offsets);
 		vkCmdBindIndexBuffer(commandBuffer,
-		indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+		indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
 		vkCmdBindDescriptorSets(commandBuffer,
 		VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout,
@@ -1375,10 +1427,22 @@ private:
 		float time = std::chrono::duration<float,
 		std::chrono::seconds::period>(current - start).count();
 
+		static float lastFlipTime = time;
+		static float factor = 1;
+		static float degrees = 1;
+
 		ubo_t ubo{};
 		ubo.model = glm::rotate(glm::mat4(1.0f),
-		time * glm::radians(90.0f),
+		glm::radians(degrees),
 		glm::vec3(0.0f, 0.0f, 1.0f));
+
+		degrees += 0.2f * factor;
+
+		if ((time - lastFlipTime) > 5)
+		{
+			lastFlipTime = time;
+			factor *= -1;
+		}
 
 		ubo.view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f),
 		glm::vec3(0.0f, 0.0f, 0.0f),
