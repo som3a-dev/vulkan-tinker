@@ -11,7 +11,7 @@ find_package(glm REQUIRED)
 find_package(Stb REQUIRED)
 
 # Add source to this project's executable.
-add_executable (vulkan-tinker "vulkan-tinker.cpp")
+add_executable (vulkan-tinker vulkan-tinker.cpp vendor/imgui_impl_glfw.cpp vendor/imgui_impl_vulkan.cpp vendor/imgui.cpp vendor/imgui_draw.cpp vendor/imgui_demo.cpp vendor/imgui_tables.cpp vendor/imgui_widgets.cpp)
 
 target_link_libraries(vulkan-tinker PRIVATE glfw)
 target_link_libraries(vulkan-tinker PRIVATE Vulkan::Vulkan)
