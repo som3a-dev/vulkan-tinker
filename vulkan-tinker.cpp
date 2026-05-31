@@ -49,7 +49,7 @@ struct vertex_t
 	glm::vec3 color;
 	glm::vec2 tex_coord;
 
-	static const int attribute_count = 3;
+	static const int attribute_count = 7;
 
 	static VkVertexInputBindingDescription get_binding_description()
 	{
@@ -84,6 +84,31 @@ struct vertex_t
 			attributes[2].format = VK_FORMAT_R32G32_SFLOAT;
 		}
 
+		{
+			attributes[3].binding = 1;
+			attributes[3].location = 3;
+			attributes[3].offset = sizeof(glm::vec4) * 0;
+			attributes[3].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+		}
+		{
+			attributes[4].binding = 1;
+			attributes[4].location = 4;
+			attributes[4].offset = sizeof(glm::vec4) * 1;
+			attributes[4].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+		}
+		{
+			attributes[5].binding = 1;
+			attributes[5].location = 5;
+			attributes[5].offset = sizeof(glm::vec4) * 2;
+			attributes[5].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+		}
+		{
+			attributes[6].binding = 1;
+			attributes[6].location = 6;
+			attributes[6].offset = sizeof(glm::vec4) * 3;
+			attributes[6].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+		}
+
 		return attributes;
 	}
 
@@ -116,8 +141,7 @@ class App
 public:
 	void run()
 	{
-		init_window();
-		init_vulkan();
+		init();
 		main_loop();
 		cleanup();
 	}
@@ -128,20 +152,35 @@ private:
 
 	static const uint32_t frames_in_flight = 3;
 
-	const int window_width = 800;
-	const int window_height = 600;
+	const int window_width = 1280;
+	const int window_height = 720;
 	bool minimized = false;
 	bool framebuffer_resized = false;
 
+	glm::vec3 camera_pos = glm::vec3(0.0f, 0.5f, -3.0f);
+	glm::vec3 camera_front = glm::vec3(0.0f, 0.0f, -1.0f);
+	glm::vec3 camera_up = glm::vec3(0.0f, 1.0f, 0.0f);
+
+	float dt = 0.0f;
+	float last_frame = 0.0f; // time of the last frame
+
+	float mouse_x = 400;
+	float mouse_y = 300;
+
+	float yaw = 88.2f;
+	float pitch = 0;
+
+	int instance_count = 100;
+
 	const std::vector<const char*> validation_layers = {
-//		"VK_LAYER_KHRONOS_validation",
+		"VK_LAYER_KHRONOS_validation",
 	};
 
 
 #ifdef NDEBUG
 	const bool enable_validation_layers = false;
 #else
-	const bool enable_validation_layers = false;
+	const bool enable_validation_layers = true;
 #endif
 
 	GLFWwindow *window = nullptr;
@@ -180,6 +219,9 @@ private:
 	VkBuffer index_buffer = VK_NULL_HANDLE;
 	VkDeviceMemory index_buffer_memory = VK_NULL_HANDLE;
 
+	VkBuffer instance_buffer = VK_NULL_HANDLE;
+	VkDeviceMemory instance_buffer_memory = VK_NULL_HANDLE;
+
 	std::vector<VkBuffer> uniform_buffers;
 	std::vector<VkDeviceMemory> uniform_buffers_memory;
 	std::vector<void*> uniform_buffers_mapped;
@@ -199,6 +241,7 @@ private:
 	std::array<VkFence, frames_in_flight> in_flight_fences;
 
 	VkQueue graphics_queue = VK_NULL_HANDLE;
+	uint32_t graphics_queue_index = -1;
 	VkQueue present_queue = VK_NULL_HANDLE;
 
 	const std::vector<const char*> device_extensions = {
@@ -225,12 +268,21 @@ private:
 		return buf;
 	}
 
+	static void check_vk_result(VkResult err)
+	{
+		if (err == VK_SUCCESS)
+			return;
+		fprintf(stderr, "[vulkan] Error: VkResult = %d\n", err);
+		if (err < 0)
+			abort();
+	}
+
 	void init()
 	{
 		init_window();
 		init_vulkan();
 
-/*		IMGUI_CHECKVERSION();
+		IMGUI_CHECKVERSION();
 		ImGui::CreateContext();
 		ImGuiIO& io = ImGui::GetIO();
 		io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
@@ -238,7 +290,24 @@ private:
 		ImGui::StyleColorsDark();
 
 		ImGui_ImplGlfw_InitForVulkan(window, true);
-		ImGui_ImplVulkan_InitInfo initInfo = {};*/
+		ImGui_ImplVulkan_InitInfo init_info = {};
+		init_info.Instance = instance;
+		init_info.PhysicalDevice = physical_device;
+		init_info.Device = device;
+		init_info.QueueFamily = graphics_queue_index;
+		init_info.Queue = graphics_queue;
+		init_info.DescriptorPool = descriptor_pool;
+		init_info.MinImageCount = frames_in_flight;
+		init_info.ImageCount = frames_in_flight;
+		init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+		init_info.PipelineInfoMain.Subpass = 0;
+		init_info.PipelineInfoMain.RenderPass = render_pass;
+		init_info.CheckVkResultFn = check_vk_result;
+
+		if (!ImGui_ImplVulkan_Init(&init_info))
+		{
+			throw std::runtime_error("Initializing ImGui failed.");
+		}
 	}
 
 	void init_window()
@@ -247,10 +316,16 @@ private:
 		glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 //		glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
 
+		GLFWmonitor* monitor = glfwGetPrimaryMonitor();
+
+		const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+
 		window = glfwCreateWindow(window_width, window_height, "Vulkan", nullptr, nullptr);
 
 		glfwSetWindowUserPointer(window, this);
 		glfwSetFramebufferSizeCallback(window, framebuffer_resize_callback);
+		glfwSetCursorPosCallback(window, mouse_callback);
+		glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 	}
 
 	void init_vulkan()
@@ -286,6 +361,7 @@ private:
 
 		create_vertex_buffer();
 		create_index_buffer();
+		create_instance_buffer();
 
 		create_command_buffers();
 		create_sync_objects();
@@ -669,20 +745,26 @@ private:
 
 	void create_descriptor_pool()
 	{
-		VkDescriptorPoolSize poolSizes[2] = {};
-		poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-		poolSizes[0].descriptorCount = frames_in_flight;
-		poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-		poolSizes[1].descriptorCount = frames_in_flight;
+		VkDescriptorPoolSize pool_sizes[] = {
+			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frames_in_flight },
+			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, frames_in_flight },
+			{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1000 },
+			{ VK_DESCRIPTOR_TYPE_SAMPLER, 1000 }
+		};
 
-		VkDescriptorPoolCreateInfo poolInfo{};
-		poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-		poolInfo.poolSizeCount = sizeof(poolSizes) / sizeof(VkDescriptorPoolSize);
-		poolInfo.pPoolSizes = poolSizes;
-		poolInfo.maxSets = frames_in_flight;
+		VkDescriptorPoolCreateInfo pool_info{};
+		pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+		pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+		pool_info.poolSizeCount = sizeof(pool_sizes) / sizeof(VkDescriptorPoolSize);
+		pool_info.pPoolSizes = pool_sizes;
+		pool_info.maxSets = 0;
+		for (VkDescriptorPoolSize& pool_size : pool_sizes)
+		{
+			pool_info.maxSets += pool_size.descriptorCount;
+		}
 
 		if (vkCreateDescriptorPool(device,
-				&poolInfo, nullptr,
+				&pool_info, nullptr,
 				&descriptor_pool) != VK_SUCCESS)
 		{
 			throw std::runtime_error("failed to create descriptor pool!");
@@ -691,7 +773,7 @@ private:
 
 	void create_uniform_buffers()
 	{
-		VkDeviceSize bufferSize = sizeof(ubo_t);
+		VkDeviceSize buffer_size = sizeof(ubo_t);
 
 		uniform_buffers.resize(frames_in_flight);
 		uniform_buffers_memory.resize(frames_in_flight);
@@ -701,33 +783,47 @@ private:
 		{
 			createBuffer(uniform_buffers[i],
 			uniform_buffers_memory[i],
-			bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+			buffer_size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
 			VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
 			vkMapMemory(device, uniform_buffers_memory[i],
-			0, bufferSize, 0,
+			0, buffer_size, 0,
 			&uniform_buffers_mapped[i]);
 		}
 	}
 
 	void create_descriptor_set_layout()
 	{
-		VkDescriptorSetLayoutBinding uboLayoutBinding{};
-		uboLayoutBinding.binding = 0;
-		uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-		uboLayoutBinding.descriptorCount = 1;
-		uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+		VkDescriptorSetLayoutBinding ubo_layout_binding{};
+		ubo_layout_binding.binding = 0;
+		ubo_layout_binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		ubo_layout_binding.descriptorCount = 1;
+		ubo_layout_binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
-		VkDescriptorSetLayoutBinding samplerLayoutBinding{};
-		samplerLayoutBinding.binding = 1;
-		samplerLayoutBinding.descriptorCount = 1;
-		samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-		samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+		VkDescriptorSetLayoutBinding combined_sampler_layout_binding{};
+		combined_sampler_layout_binding.binding = 1;
+		combined_sampler_layout_binding.descriptorCount = 1;
+		combined_sampler_layout_binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		combined_sampler_layout_binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+		VkDescriptorSetLayoutBinding sampled_image_layout_binding{};
+		sampled_image_layout_binding.binding = 2;
+		sampled_image_layout_binding.descriptorCount = 1;
+		sampled_image_layout_binding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+		sampled_image_layout_binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+		VkDescriptorSetLayoutBinding sampler_layout_binding{};
+		sampler_layout_binding.binding = 3;
+		sampler_layout_binding.descriptorCount = 1;
+		sampler_layout_binding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+		sampler_layout_binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
 		VkDescriptorSetLayoutBinding bindings[] = {
-			uboLayoutBinding,
-			samplerLayoutBinding
+			ubo_layout_binding,
+			combined_sampler_layout_binding
+//			sampled_image_layout_binding,
+//			sampler_layout_binding
 		};
 		
 		VkDescriptorSetLayoutCreateInfo layoutInfo{};
@@ -822,6 +918,56 @@ private:
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
 		copyBuffer(stagingBuffer, vertex_buffer, size);
+
+		vkDestroyBuffer(device, stagingBuffer, nullptr);
+		vkFreeMemory(device, stagingBufferMemory, nullptr);
+	}
+
+	void create_instance_buffer()
+	{
+		std::vector<glm::mat4> instances;
+
+		float x = 0.0f;
+		for (int i = 0; i < instance_count; i++)
+		{
+			glm::mat4 m = glm::rotate(glm::mat4(1.0f), glm::radians(270.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+			m = glm::translate(m, glm::vec3(x, 0.0f, 0.0f));
+
+			instances.push_back(m);
+
+			x += 1.5f;
+		}
+
+		/*glm::mat4 m1 = glm::rotate(glm::mat4(1.0f), glm::radians(270.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+		m1 = glm::translate(m1, glm::vec3(0.0f, 0.0f, 0.0f));
+
+		glm::mat4 m2 = glm::rotate(glm::mat4(1.0f), glm::radians(270.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+		m2 = glm::translate(m2, glm::vec3(3.0f, 0.0f, 0.0f));
+
+		// Fill with instance data..
+		instances.push_back(m1);
+		instances.push_back(m2);*/
+
+		VkDeviceSize size = sizeof(instances[0]) * instances.size();
+
+		VkBuffer stagingBuffer = VK_NULL_HANDLE;
+		VkDeviceMemory stagingBufferMemory = VK_NULL_HANDLE;
+		createBuffer(stagingBuffer, stagingBufferMemory,
+		size,
+		VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+		void* memory;
+		vkMapMemory(device, stagingBufferMemory, 0, VK_WHOLE_SIZE, 0, &memory);
+		memcpy(memory, instances.data(), size);
+		vkUnmapMemory(device, stagingBufferMemory);
+
+		createBuffer(instance_buffer, instance_buffer_memory,
+		size,
+		(VkBufferUsageFlagBits)(VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT), 
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+		copyBuffer(stagingBuffer, instance_buffer, size);
 
 		vkDestroyBuffer(device, stagingBuffer, nullptr);
 		vkFreeMemory(device, stagingBufferMemory, nullptr);
@@ -927,12 +1073,12 @@ private:
 	{
 		QueueFamilyIndices queueFamilyIndices = find_queue_families(physical_device);
 
-		VkCommandPoolCreateInfo poolInfo{};
-		poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-		poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-		poolInfo.queueFamilyIndex = queueFamilyIndices.graphics.value();
+		VkCommandPoolCreateInfo pool_info{};
+		pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+		pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+		pool_info.queueFamilyIndex = queueFamilyIndices.graphics.value();
 
-		if (vkCreateCommandPool(device, &poolInfo, nullptr, &command_pool) != VK_SUCCESS) {
+		if (vkCreateCommandPool(device, &pool_info, nullptr, &command_pool) != VK_SUCCESS) {
 			throw std::runtime_error("failed to create command pool!");
 		}
 	}
@@ -950,7 +1096,7 @@ private:
 		}
 	}
 
-	void record_command_buffer(VkCommandBuffer command_buffer, uint32_t imageIndex)
+	void record_command_buffer(VkCommandBuffer command_buffer, uint32_t image_index, ImDrawData* imgui_draw_data)
 	{
 		VkCommandBufferBeginInfo begin_info{};
 		begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -962,15 +1108,14 @@ private:
 		VkRenderPassBeginInfo renderPassInfo{};
 		renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
 		renderPassInfo.renderPass = render_pass;
-		renderPassInfo.framebuffer = swap_chain_framebuffers[imageIndex];
+		renderPassInfo.framebuffer = swap_chain_framebuffers[image_index];
 		renderPassInfo.renderArea.offset = {0, 0};
 		renderPassInfo.renderArea.extent = swap_chain_extent;
 
-		VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
 		VkClearValue clearValues[2] = {};
 
 		// Must follow the same order as the attachments
-		clearValues[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+		clearValues[0].color = {{1.0f, 1.0f, 1.0f, 1.0f}};
 		clearValues[1].depthStencil = {1.0f, 0};
 		
 		renderPassInfo.clearValueCount = sizeof(clearValues) / sizeof(VkClearValue);
@@ -980,8 +1125,24 @@ private:
 
 		vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphics_pipeline);
 
-		VkBuffer vertexBuffers[] = {vertex_buffer};
-		VkDeviceSize offsets[] = {0};
+		VkRect2D scissor{};
+		scissor.offset = {0, 0};
+		scissor.extent = swap_chain_extent;
+
+		vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+
+		VkViewport viewport{};
+		viewport.x = 0.0f;
+		viewport.y = 0.0f;
+		viewport.width = (float)swap_chain_extent.width;
+		viewport.height = (float)swap_chain_extent.height;
+		viewport.minDepth = 0.0f;
+		viewport.maxDepth = 1.0f;
+
+		vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+
+		VkBuffer vertexBuffers[] = {vertex_buffer, instance_buffer};
+		VkDeviceSize offsets[] = {0, 0};
 
 		vkCmdBindVertexBuffers(command_buffer, 0,
 		sizeof(vertexBuffers) / sizeof(VkBuffer), vertexBuffers, offsets);
@@ -994,7 +1155,9 @@ private:
 		0, nullptr);
 
 		vkCmdDrawIndexed(command_buffer,
-		indices.size(), 1, 0, 0, 0);
+		indices.size(), instance_count, 0, 0, 0);
+
+		ImGui_ImplVulkan_RenderDrawData(imgui_draw_data, command_buffer);
 
 		vkCmdEndRenderPass(command_buffer);
 
@@ -1230,9 +1393,18 @@ private:
 		VkPipelineVertexInputStateCreateInfo vertexFormat{};
 		vertexFormat.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
 
-		VkVertexInputBindingDescription bindingDesc = vertex_t::get_binding_description();
-		vertexFormat.vertexBindingDescriptionCount = 1;
-		vertexFormat.pVertexBindingDescriptions = &bindingDesc;
+		VkVertexInputBindingDescription bindingDescs[2];
+		bindingDescs[0] = vertex_t::get_binding_description();
+		
+		VkVertexInputBindingDescription instance_binding{};
+		instance_binding.binding = 1;
+		instance_binding.stride = sizeof(glm::mat4);
+		instance_binding.inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
+
+		bindingDescs[1] = instance_binding;
+
+		vertexFormat.vertexBindingDescriptionCount = sizeof(bindingDescs) / sizeof(bindingDescs[0]);
+		vertexFormat.pVertexBindingDescriptions = bindingDescs;
 
 		std::array<VkVertexInputAttributeDescription, vertex_t::attribute_count> attributeDescs = vertex_t::get_attribute_descriptions();
 		vertexFormat.vertexAttributeDescriptionCount = attributeDescs.size();
@@ -1243,6 +1415,8 @@ private:
 		inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 		inputAssembly.primitiveRestartEnable = VK_FALSE;
 
+		// TODO(omar): setting the viewport and scissor here is probably redundant
+		// Since we set them dynamically
 		VkViewport viewport{};
 		viewport.x = 0.0f;
 		viewport.y = 0.0f;
@@ -1311,6 +1485,17 @@ private:
 		depthStencil.maxDepthBounds = 1.0f;
 		depthStencil.stencilTestEnable = VK_FALSE;
 
+		VkPipelineDynamicStateCreateInfo dynamic_state{};
+		dynamic_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+
+		const VkDynamicState dynamic_states[] = {
+			VK_DYNAMIC_STATE_SCISSOR,
+			VK_DYNAMIC_STATE_VIEWPORT
+		};
+
+		dynamic_state.pDynamicStates = dynamic_states;
+		dynamic_state.dynamicStateCount = sizeof(dynamic_states) / sizeof(VkDynamicState);
+
 		VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
 		pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 		pipelineLayoutInfo.setLayoutCount = 1;
@@ -1321,27 +1506,28 @@ private:
 			throw std::runtime_error("failed to create pipeline layout!");
 		}
 
-		VkGraphicsPipelineCreateInfo pipelineInfo{};
-		pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-		pipelineInfo.stageCount =  sizeof(shaderStageInfos) / sizeof(VkPipelineShaderStageCreateInfo);
-		pipelineInfo.pStages = shaderStageInfos;
-		pipelineInfo.pVertexInputState = &vertexFormat;
-		pipelineInfo.pInputAssemblyState = &inputAssembly;
-		pipelineInfo.pViewportState = &viewportState;
-		pipelineInfo.pRasterizationState = &rasterizer;
-		pipelineInfo.pMultisampleState = &multisampling;
-		pipelineInfo.pDepthStencilState = &depthStencil; 
-		pipelineInfo.pColorBlendState = &colorBlending;
+		VkGraphicsPipelineCreateInfo pipeline_info{};
+		pipeline_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+		pipeline_info.stageCount =  sizeof(shaderStageInfos) / sizeof(VkPipelineShaderStageCreateInfo);
+		pipeline_info.pStages = shaderStageInfos;
+		pipeline_info.pVertexInputState = &vertexFormat;
+		pipeline_info.pInputAssemblyState = &inputAssembly;
+		pipeline_info.pViewportState = &viewportState;
+		pipeline_info.pRasterizationState = &rasterizer;
+		pipeline_info.pMultisampleState = &multisampling;
+		pipeline_info.pDepthStencilState = &depthStencil; 
+		pipeline_info.pColorBlendState = &colorBlending;
+		pipeline_info.pDynamicState = &dynamic_state;
 
-		pipelineInfo.layout = pipeline_layout;
-		pipelineInfo.renderPass = render_pass;
-		pipelineInfo.subpass = 0;
+		pipeline_info.layout = pipeline_layout;
+		pipeline_info.renderPass = render_pass;
+		pipeline_info.subpass = 0;
 
-		pipelineInfo.basePipelineHandle = VK_NULL_HANDLE; // Optional
-		pipelineInfo.basePipelineIndex = -1; // Optional
+		pipeline_info.basePipelineHandle = VK_NULL_HANDLE; // Optional
+		pipeline_info.basePipelineIndex = -1; // Optional
 
 		if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE,
-			1, &pipelineInfo, nullptr, &graphics_pipeline) != VK_SUCCESS) {
+			1, &pipeline_info, nullptr, &graphics_pipeline) != VK_SUCCESS) {
 			throw std::runtime_error("failed to create graphics pipeline!");
 		}
 
@@ -1353,9 +1539,20 @@ private:
 	{
 		while (!glfwWindowShouldClose(window))
 		{
+			float current_frame = glfwGetTime();
+			dt = current_frame - last_frame;
+			last_frame = current_frame;
+
 			glfwPollEvents();
 			if (!minimized)
 			{
+				process_input(window);
+				glm::vec3 direction;
+				direction.x = cos(glm::radians(yaw)) * cos(glm::radians(pitch));
+				direction.y = sin(glm::radians(pitch));
+				direction.z = sin(glm::radians(yaw)) * cos(glm::radians(pitch));
+
+				camera_front = glm::normalize(direction);
 				draw_frame();
 			}
 		}
@@ -1367,8 +1564,8 @@ private:
 	{
 		vkWaitForFences(device, 1, &in_flight_fences[current_frame], VK_TRUE, UINT64_MAX);
 
-		uint32_t imageIndex;
-		VkResult res = vkAcquireNextImageKHR(device, swap_chain, UINT64_MAX, image_available_semaphores[current_frame], VK_NULL_HANDLE, &imageIndex);
+		uint32_t image_index;
+		VkResult res = vkAcquireNextImageKHR(device, swap_chain, UINT64_MAX, image_available_semaphores[current_frame], VK_NULL_HANDLE, &image_index);
 
 		if (res == VK_ERROR_OUT_OF_DATE_KHR || framebuffer_resized)
 		{
@@ -1383,7 +1580,39 @@ private:
 		vkResetFences(device, 1, &in_flight_fences[current_frame]);
 		vkResetCommandBuffer(command_buffers[current_frame], 0);
 
-		record_command_buffer(command_buffers[current_frame], imageIndex);
+		ImGui_ImplVulkan_NewFrame();
+		ImGui_ImplGlfw_NewFrame();
+		ImGui::NewFrame();
+
+//		ImGui::ShowDemoWindow();
+
+		ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoDecoration | 
+									ImGuiWindowFlags_AlwaysAutoResize | 
+									ImGuiWindowFlags_NoSavedSettings | 
+									ImGuiWindowFlags_NoFocusOnAppearing | 
+									ImGuiWindowFlags_NoNav;
+
+		if (ImGui::Begin("Performance Diagnostics", nullptr, window_flags)) {
+			ImGui::Text("VULKAN RENDERER");
+			ImGui::Separator();
+			
+			// Grab values directly from ImGui's built-in timing metrics
+			float fps = ImGui::GetIO().Framerate;
+			float ms = 1000.0f / fps;
+
+			ImGui::Text("Performance: %.2f FPS", fps);
+			ImGui::Text("Frame Time:  %.3f ms", ms);
+			
+			// You can easily push your own engine metrics here later!
+			// ImGui::Text("Draw Calls:  %d", globalDrawCallCount);
+		}
+		ImGui::End();
+
+		ImGui::Render();
+
+		ImDrawData* draw_data = ImGui::GetDrawData();
+
+		record_command_buffer(command_buffers[current_frame], image_index, draw_data);
 
 		update_uniform_buffer(current_frame);
 
@@ -1415,7 +1644,7 @@ private:
 
 		presentInfo.swapchainCount = 1;
 		presentInfo.pSwapchains = &swap_chain;
-		presentInfo.pImageIndices = &imageIndex;
+		presentInfo.pImageIndices = &image_index;
 
 		res = vkQueuePresentKHR(present_queue, &presentInfo);
 		if (res == VK_ERROR_OUT_OF_DATE_KHR || framebuffer_resized)
@@ -1427,7 +1656,6 @@ private:
 		{
 			throw std::runtime_error("failed to present swap chain image!");
 		}
-
 
 		current_frame = (current_frame + 1) % frames_in_flight;
 	}
@@ -1450,7 +1678,10 @@ private:
 		glm::radians(degrees),
 		glm::vec3(0.0f, 0.0f, 1.0f));
 
-		degrees += 0.2f * factor;
+//		ubo.model = glm::translate(glm::mat4(1.0f),
+//		glm::vec3(0.0f, 0.0f, 0.0f));
+
+//		degrees += 0.2f * factor;
 
 		if ((time - lastFlipTime) > 5)
 		{
@@ -1458,21 +1689,41 @@ private:
 			factor *= -1;
 		}
 
-		ubo.view = glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f),
+		glm::vec3 camera_target = glm::vec3(0.0f, 0.0f, 0.0f);
+		glm::vec3 camera_direction = glm::normalize(camera_pos - camera_target);
+		glm::vec3 up = glm::vec3(0.0f, 1.0f, 0.0f);
+		glm::vec3 camera_right = glm::normalize(glm::cross(up, camera_direction));
+
+		/*ubo.view = glm::lookAt(glm::vec3(0.0f, 0.0f, 3.0f),
 		glm::vec3(0.0f, 0.0f, 0.0f),
-		glm::vec3(0.0f, 0.0f, 1.0f));
+		glm::vec3(0.0f, 1.0f, 0.0f));*/
 
-		ubo.proj = glm::perspective(glm::radians(45.0f),
+		const float radius = 4.0f;
+		float camX = sin(glfwGetTime()) * radius;
+		float camZ = cos(glfwGetTime()) * radius;
+		glm::mat4 view;
+		view = glm::lookAt(camera_pos,
+		camera_pos + camera_front, camera_up);
+
+		ubo.view = view;
+
+		ubo.proj = glm::perspective(glm::radians(60.0f),
 		swap_chain_extent.width / (float)swap_chain_extent.height,
-		0.1f, 10.0f);
+		0.1f, 100.0f);
 
-		ubo.proj[1][1] *= - 1; // GLM y is flipped
+		ubo.proj[1][1] *= -1; // GLM y is flipped
 		memcpy(uniform_buffers_mapped[currentImage], &ubo,
 		sizeof(ubo));
 	}
 
 	void cleanup()
 	{
+		vkDeviceWaitIdle(device);
+		ImGui_ImplVulkan_Shutdown();
+		ImGui_ImplGlfw_Shutdown();
+
+		ImGui::DestroyContext();
+
 		cleanup_sync_objects();
 
 		vkDestroyImage(device, texture_image, nullptr);
@@ -1485,6 +1736,9 @@ private:
 
 		vkDestroyBuffer(device, index_buffer, nullptr);
 		vkFreeMemory(device, index_buffer_memory, nullptr);
+
+		vkDestroyBuffer(device, instance_buffer, nullptr);
+		vkFreeMemory(device, instance_buffer_memory, nullptr);
 
 		for (int i = 0; i < frames_in_flight; i++)
 		{
@@ -1590,6 +1844,7 @@ private:
     		throw std::runtime_error("failed to create logical device!");
 		}
 
+		graphics_queue_index = indices.graphics.value();
 		vkGetDeviceQueue(device, indices.graphics.value(), 0, &graphics_queue);
 		vkGetDeviceQueue(device, indices.present.value(), 0, &present_queue);
 	}
@@ -1796,6 +2051,11 @@ private:
 			{
 				return mode;
 			}
+
+			if (mode == VK_PRESENT_MODE_IMMEDIATE_KHR)
+			{
+				return mode;
+			}
 		}
 
 		return VK_PRESENT_MODE_FIFO_KHR;
@@ -1937,7 +2197,6 @@ private:
 		return extensions;
 	}
 
-
 	static void framebuffer_resize_callback(GLFWwindow* window, int width, int height)
 	{
 		auto app = reinterpret_cast<App*>(glfwGetWindowUserPointer(window));
@@ -1950,6 +2209,74 @@ private:
 		else
 		{
 			app->minimized = false;
+		}
+	}
+
+	static void mouse_callback(GLFWwindow* window, double x, double y)
+	{
+		App* app = static_cast<App*>(glfwGetWindowUserPointer(window));
+
+		static bool first_time = true;
+		if (first_time)
+		{
+			app->mouse_x = x;
+			app->mouse_y = y;
+			first_time = false;
+		}
+
+		float offset_x = x - app->mouse_x;
+		float offset_y = y - app->mouse_y;
+		offset_y = 0;
+		app->mouse_x = x;
+		app->mouse_y = y;
+
+		const float sens = 0.1f;
+		offset_x *= sens;
+		offset_y *= sens;
+
+		app->yaw += offset_x;
+		app->pitch += offset_y;
+
+		if (app->pitch > 89.0f)
+		{
+			app->pitch = 89.0f;
+		}
+		else if (app->pitch < -89.0f)
+		{
+			app->pitch = -89.0f;
+		}
+
+		glm::vec3 direction;
+		direction.x = cos(glm::radians(app->yaw)) * cos(glm::radians(app->pitch));
+		direction.y = sin(glm::radians(app->pitch));
+		direction.z = sin(glm::radians(app->yaw)) * cos(glm::radians(app->pitch));
+
+		app->camera_front = glm::normalize(direction);
+	}
+
+	void process_input(GLFWwindow* window)
+	{
+		float camera_speed = 2.5f * dt;
+		if (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS)
+		{
+			camera_speed *= 5;
+		}
+
+		if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
+		{
+			camera_pos += camera_speed * camera_front;
+		}
+		if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
+		{
+			camera_pos -= camera_speed * camera_front;
+		}
+		if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
+		{
+			camera_pos -= glm::normalize(glm::cross(camera_front, camera_up)) * camera_speed;
+		}
+		if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
+		{
+			camera_pos += glm::normalize(glm::cross(camera_front, camera_up)) * camera_speed;
 		}
 	}
 };
