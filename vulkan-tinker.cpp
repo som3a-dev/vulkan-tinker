@@ -136,6 +136,174 @@ namespace std {
 	};
 }
 
+struct Model
+{
+	std::vector<vertex_t> vertices;
+	std::vector<uint32_t> indices;
+	tinyobj::attrib_t attrib;
+
+	VkBuffer vertex_buffer = VK_NULL_HANDLE;
+	VkDeviceMemory vertex_buffer_memory = VK_NULL_HANDLE;
+
+	VkBuffer index_buffer = VK_NULL_HANDLE;
+	VkDeviceMemory index_buffer_memory = VK_NULL_HANDLE;
+
+	VkImage texture_image = VK_NULL_HANDLE;
+	VkImageView texture_image_view = VK_NULL_HANDLE;
+	VkDeviceMemory texture_image_memory = VK_NULL_HANDLE;
+
+	std::vector<VkDescriptorSet> descriptor_sets;
+
+	~Model()
+	{
+		// vkDestroyImage(device, texture_image, nullptr);
+		// vkFreeMemory(device, texture_image_memory, nullptr);
+		// vkDestroyImageView(device, texture_image_view, nullptr);
+
+		// vkDestroyBuffer(device, vertex_buffer, nullptr);
+		// vkFreeMemory(device, vertex_buffer_memory, nullptr);
+
+		// vkDestroyBuffer(device, index_buffer, nullptr);
+		// vkFreeMemory(device, index_buffer_memory, nullptr);
+	}
+
+	void load_mesh(const tinyobj::shape_t& shape)
+	{
+		// TODO(omar): the unique vertex check is O(N)
+		std::unordered_map<vertex_t, uint32_t> uniqueVertices{};
+		std::cout << shape.name << std::endl;
+		for (const tinyobj::index_t& index : shape.mesh.indices)
+		{
+			vertex_t vertex{};
+
+			vertex.pos.x = attrib.vertices[3 * index.vertex_index + 0];
+			vertex.pos.y = attrib.vertices[3 * index.vertex_index + 1];
+			vertex.pos.z = attrib.vertices[3 * index.vertex_index + 2];
+
+			vertex.tex_coord.x = attrib.texcoords[2 * index.texcoord_index + 0];
+			vertex.tex_coord.y = 1.0f - attrib.texcoords[2 * index.texcoord_index + 1];
+
+			vertex.color = {1.0f, 1.0f, 1.0f};
+
+			if (uniqueVertices.count(vertex) == 0)
+			{
+				uniqueVertices[vertex] = (uint32_t)(vertices.size());
+				vertices.push_back(vertex);
+			}
+
+			indices.push_back(uniqueVertices[vertex]);
+		}
+	}
+
+	void load_mat(const tinyobj::material_t& mat)
+	{
+		// std::string path = "assets/workshop/" + mat.diffuse_texname;
+
+		// app.create_texture(path.c_str(), texture_image, texture_image_view,
+		// texture_image_memory);
+	}
+};
+
+namespace Vulkan 
+{
+	class VulkanContext
+	{
+		VkDevice device = VK_NULL_HANDLE;
+		VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
+		VkCommandPool command_pool = VK_NULL_HANDLE;
+
+		void init()
+		{
+			create_instance();
+			create_surface();
+
+			pick_physical_device();
+			create_logical_device();
+
+			create_swap_chain();
+			create_swap_chain_image_views();
+
+			create_render_pass();
+
+			create_uniform_buffers();
+
+			create_command_pool();
+
+			create_depth_resources();
+			create_frame_buffers();
+
+			create_texture_sampler(texture_sampler);
+
+			create_descriptor_set_layout();
+			create_descriptor_pool();
+
+			load_models();
+
+			create_graphics_pipeline();
+
+			// create_vertex_buffer();
+			// create_index_buffer();
+			create_instance_buffer();
+
+			create_command_buffers();
+			create_sync_objects();
+		}
+
+		void create_depth_resources()
+		{
+			create_image(depth_image, depth_image_memory,
+				swap_chain_extent.width, swap_chain_extent.height,
+				VK_IMAGE_TILING_OPTIMAL,
+				VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+				depth_image_format); 
+
+			depth_image_view = create_image_view(depth_image, depth_image_format,
+				VK_IMAGE_ASPECT_DEPTH_BIT);
+
+			transition_image_layout(depth_image, depth_image_format,
+				VK_IMAGE_LAYOUT_UNDEFINED,
+				VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+		}
+
+		VkCommandBuffer begin_one_time_commands()
+		{
+			VkCommandBufferAllocateInfo alloc_info{};
+			alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+			alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+			alloc_info.commandPool = command_pool;
+			alloc_info.commandBufferCount = 1;
+
+			VkCommandBuffer command_buffer;
+			vkAllocateCommandBuffers(device, &alloc_info, &command_buffer);
+
+			VkCommandBufferBeginInfo begin_info{};
+			begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+			begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+			vkBeginCommandBuffer(command_buffer, &begin_info);
+
+			return command_buffer;
+		}
+
+		void end_one_time_commands(VkCommandBuffer& buffer)
+		{
+			vkEndCommandBuffer(buffer);
+
+			VkSubmitInfo submit_info{};
+			submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+			submit_info.commandBufferCount = 1;
+			submit_info.pCommandBuffers = &buffer;
+
+			vkQueueSubmit(graphics_queue, 1, &submit_info, VK_NULL_HANDLE);
+			vkQueueWaitIdle(graphics_queue);
+
+			vkFreeCommandBuffers(device, command_pool, 1, &buffer);
+		}
+	};
+
+};
+
 class App
 {
 public:
@@ -147,13 +315,16 @@ public:
 	}
 
 private:
-	std::vector<vertex_t> vertices;
-	std::vector<uint32_t> indices;
+	std::vector<Model> models;
+
+	tinyobj::attrib_t attrib;
+	std::vector<tinyobj::shape_t> shapes;
+	std::vector<tinyobj::material_t> mats;
 
 	static const uint32_t frames_in_flight = 3;
 
-	const int window_width = 1280;
-	const int window_height = 720;
+	const int window_width = 800;
+	const int window_height = 600;
 	bool minimized = false;
 	bool framebuffer_resized = false;
 
@@ -170,7 +341,7 @@ private:
 	float yaw = 88.2f;
 	float pitch = 0;
 
-	int instance_count = 100;
+	int instance_count = 1;
 
 	const std::vector<const char*> validation_layers = {
 		"VK_LAYER_KHRONOS_validation",
@@ -203,21 +374,12 @@ private:
 
 	int current_frame = 0;
 
-	VkImage texture_image = VK_NULL_HANDLE;
-	VkDeviceMemory texture_image_memory = VK_NULL_HANDLE;
-	VkImageView texture_image_view = VK_NULL_HANDLE;
 	VkSampler texture_sampler = VK_NULL_HANDLE;
 
 	VkImage depth_image = VK_NULL_HANDLE;
 	VkDeviceMemory depth_image_memory = VK_NULL_HANDLE;
 	VkImageView depth_image_view = VK_NULL_HANDLE;
 	const VkFormat depth_image_format = VK_FORMAT_D32_SFLOAT; // TODO(omar): check if the format is supported
-
-	VkBuffer vertex_buffer = VK_NULL_HANDLE;
-	VkDeviceMemory vertex_buffer_memory = VK_NULL_HANDLE;
-
-	VkBuffer index_buffer = VK_NULL_HANDLE;
-	VkDeviceMemory index_buffer_memory = VK_NULL_HANDLE;
 
 	VkBuffer instance_buffer = VK_NULL_HANDLE;
 	VkDeviceMemory instance_buffer_memory = VK_NULL_HANDLE;
@@ -227,7 +389,6 @@ private:
 	std::vector<void*> uniform_buffers_mapped;
 
 	VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
-	std::vector<VkDescriptorSet> descriptor_sets;
 	VkDescriptorSetLayout descriptor_set_layout{};
 
 	VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
@@ -330,8 +491,6 @@ private:
 
 	void init_vulkan()
 	{
-		load_model();
-
 		create_instance();
 		create_surface();
 
@@ -350,65 +509,60 @@ private:
 		create_depth_resources();
 		create_frame_buffers();
 
-		create_texture();
-		create_texture_sampler();
+		create_texture_sampler(texture_sampler);
 
 		create_descriptor_set_layout();
 		create_descriptor_pool();
-		create_descriptor_sets();
+
+		load_models();
 
 		create_graphics_pipeline();
 
-		create_vertex_buffer();
-		create_index_buffer();
+		// create_vertex_buffer();
+		// create_index_buffer();
 		create_instance_buffer();
 
 		create_command_buffers();
 		create_sync_objects();
 	}
 
-	void load_model()
+	Model load_model(const tinyobj::shape_t& shape, const tinyobj::material_t& mat)
 	{
-		tinyobj::attrib_t attrib;
-		std::vector<tinyobj::shape_t> shapes;
-		std::vector<tinyobj::material_t> materials;
-		std::string err;
+		Model model;
+		model.attrib = attrib;
+		model.load_mesh(shape);
 
-		if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &err,
-			"assets/models/viking_room.obj"))
+		std::string path = "assets/workshop/" + mat.diffuse_texname;
+		create_texture(path.c_str(), model.texture_image, model.texture_image_view,
+		model.texture_image_memory);
+
+		create_vertex_buffer(model.vertices, model.vertex_buffer, model.vertex_buffer_memory);
+		create_index_buffer(model.indices, model.index_buffer, model.index_buffer_memory);
+
+		allocate_descriptor_sets(model.descriptor_sets);
+		create_descriptor_sets(model.descriptor_sets, model.texture_image_view);
+
+		return model;
+	}
+
+	void load_models()
+	{
+		if (shapes.size() == 0)
 		{
-			throw std::runtime_error(err);
-		}
-
-		// TODO(omar): the unique vertex check is O(N)
-		std::unordered_map<vertex_t, uint32_t> uniqueVertices{};
-
-		for (const tinyobj::shape_t& shape : shapes)		
-		{
-			for (const tinyobj::index_t& index : shape.mesh.indices)
+			std::string err;
+			if (!tinyobj::LoadObj(&attrib, &shapes, &mats, &err,
+				"assets/workshop/ps1-style-workshop.obj", "assets/workshop/"))
 			{
-				vertex_t vertex{};
-
-				vertex.pos.x = attrib.vertices[3 * index.vertex_index + 0];
-				vertex.pos.y = attrib.vertices[3 * index.vertex_index + 1];
-				vertex.pos.z = attrib.vertices[3 * index.vertex_index + 2];
-
-				vertex.tex_coord.x = attrib.texcoords[2 * index.texcoord_index + 0];
-				vertex.tex_coord.y = 1.0f - attrib.texcoords[2 * index.texcoord_index + 1];
-
-				vertex.color = {1.0f, 1.0f, 1.0f};
-
-				if (uniqueVertices.count(vertex) == 0)
-				{
-					uniqueVertices[vertex] = (uint32_t)(vertices.size());
-					vertices.push_back(vertex);
-				}
-
-				indices.push_back(uniqueVertices[vertex]);
+				throw std::runtime_error(err);
+			}
+			else if (err.empty() == false)
+			{
+				std::cout << err << std::endl;
 			}
 		}
 
-		std::cout << vertices.size() * sizeof(vertex_t) << std::endl;
+		models.push_back(load_model(shapes[0], mats[0]));
+		models.push_back(load_model(shapes[1], mats[1]));
 	}
 
 	void create_depth_resources()
@@ -515,9 +669,9 @@ private:
 		vkBindImageMemory(device, image, imageMemory, 0);
 	}
 
-	void create_texture() {
+	void create_texture(const char* path, VkImage& texture_image, VkImageView& texture_image_view, VkDeviceMemory& texture_image_memory) {
 		int texWidth, texHeight, texChannels;
-		stbi_uc* pixels = stbi_load("assets/textures/viking_room.png",
+		stbi_uc* pixels = stbi_load(path,
 		&texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
 		if (!pixels) {
 			throw std::runtime_error("failed to load texture image");
@@ -562,7 +716,7 @@ private:
 			VK_IMAGE_ASPECT_COLOR_BIT);
 	}
 
-	void create_texture_sampler()
+	void create_texture_sampler(VkSampler& texture_sampler)
 	{
 		VkPhysicalDeviceProperties props{};
 		vkGetPhysicalDeviceProperties(physical_device, &props);
@@ -688,7 +842,7 @@ private:
 		end_one_time_commands(command_buffer);
 	}
 
-	void create_descriptor_sets()
+	void allocate_descriptor_sets(std::vector<VkDescriptorSet>& descriptor_sets)
 	{
 		std::vector<VkDescriptorSetLayout> layouts(frames_in_flight,
 		descriptor_set_layout);
@@ -705,7 +859,10 @@ private:
 		{
 			throw std::runtime_error("failed to allocate descriptor sets!");
 		}
+	}
 
+	void create_descriptor_sets(std::vector<VkDescriptorSet>& descriptor_sets, VkImageView& texture_image_view)
+	{
 		for (int i = 0; i < frames_in_flight; i++)
 		{
 			VkDescriptorBufferInfo buffer{};
@@ -746,8 +903,8 @@ private:
 	void create_descriptor_pool()
 	{
 		VkDescriptorPoolSize pool_sizes[] = {
-			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frames_in_flight },
-			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, frames_in_flight },
+			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1000 },
+			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 },
 			{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1000 },
 			{ VK_DESCRIPTOR_TYPE_SAMPLER, 1000 }
 		};
@@ -838,7 +995,7 @@ private:
 		}
 	}
 
-	void create_index_buffer()
+	void create_index_buffer(std::vector<uint32_t>& indices, VkBuffer& index_buffer, VkDeviceMemory& index_buffer_memory)
 	{
 		VkDeviceSize size = sizeof(indices[0]) * indices.size();
 
@@ -896,7 +1053,7 @@ private:
 		vkBindBufferMemory(device, buffer, memory, 0);
 	}
 
-	void create_vertex_buffer()
+	void create_vertex_buffer(std::vector<vertex_t>& vertices, VkBuffer& vertex_buffer, VkDeviceMemory& vertex_buffer_memory)
 	{
 		VkDeviceSize size = sizeof(vertices[0]) * vertices.size();
 
@@ -927,11 +1084,11 @@ private:
 	{
 		std::vector<glm::mat4> instances;
 
-		float x = 0.0f;
+		float x = 50.0f;
 		for (int i = 0; i < instance_count; i++)
 		{
-			glm::mat4 m = glm::rotate(glm::mat4(1.0f), glm::radians(270.0f), glm::vec3(1.0f, 0.0f, 0.0f));
-			m = glm::translate(m, glm::vec3(x, 0.0f, 0.0f));
+			glm::mat4 m = glm::rotate(glm::mat4(1.0f), glm::radians(0.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+			m = glm::translate(m, glm::vec3(x, -600.0f, 1800.0f));
 
 			instances.push_back(m);
 
@@ -1141,6 +1298,11 @@ private:
 
 		vkCmdSetViewport(command_buffer, 0, 1, &viewport);
 
+		Model model = models[1];
+
+		VkBuffer vertex_buffer = model.vertex_buffer;
+		VkBuffer index_buffer = model.index_buffer;
+
 		VkBuffer vertexBuffers[] = {vertex_buffer, instance_buffer};
 		VkDeviceSize offsets[] = {0, 0};
 
@@ -1151,11 +1313,11 @@ private:
 
 		vkCmdBindDescriptorSets(command_buffer,
 		VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout,
-		0, 1, &(descriptor_sets[0]),
+		0, 1, &(model.descriptor_sets[0]),
 		0, nullptr);
 
 		vkCmdDrawIndexed(command_buffer,
-		indices.size(), instance_count, 0, 0, 0);
+		model.indices.size(), instance_count, 0, 0, 0);
 
 		ImGui_ImplVulkan_RenderDrawData(imgui_draw_data, command_buffer);
 
@@ -1602,6 +1764,7 @@ private:
 
 			ImGui::Text("Performance: %.2f FPS", fps);
 			ImGui::Text("Frame Time:  %.3f ms", ms);
+			ImGui::Text("Cam Pos:     %.3f, %.3f, %.3f", camera_pos.x, camera_pos.y, camera_pos.z);
 			
 			// You can easily push your own engine metrics here later!
 			// ImGui::Text("Draw Calls:  %d", globalDrawCallCount);
@@ -1676,7 +1839,7 @@ private:
 		ubo_t ubo{};
 		ubo.model = glm::rotate(glm::mat4(1.0f),
 		glm::radians(degrees),
-		glm::vec3(0.0f, 0.0f, 1.0f));
+		glm::vec3(0.0f, 10.0f, 400.0f));
 
 //		ubo.model = glm::translate(glm::mat4(1.0f),
 //		glm::vec3(0.0f, 0.0f, 0.0f));
@@ -1698,9 +1861,9 @@ private:
 		glm::vec3(0.0f, 0.0f, 0.0f),
 		glm::vec3(0.0f, 1.0f, 0.0f));*/
 
-		const float radius = 4.0f;
-		float camX = sin(glfwGetTime()) * radius;
-		float camZ = cos(glfwGetTime()) * radius;
+// 		const float radius = 4.0f;
+		// float camX = sin(glfwGetTime()) * radius;
+		// float camZ = cos(glfwGetTime()) * radius;
 		glm::mat4 view;
 		view = glm::lookAt(camera_pos,
 		camera_pos + camera_front, camera_up);
@@ -1709,7 +1872,7 @@ private:
 
 		ubo.proj = glm::perspective(glm::radians(60.0f),
 		swap_chain_extent.width / (float)swap_chain_extent.height,
-		0.1f, 100.0f);
+		0.1f, 10000.0f);
 
 		ubo.proj[1][1] *= -1; // GLM y is flipped
 		memcpy(uniform_buffers_mapped[currentImage], &ubo,
@@ -1726,16 +1889,20 @@ private:
 
 		cleanup_sync_objects();
 
-		vkDestroyImage(device, texture_image, nullptr);
-		vkFreeMemory(device, texture_image_memory, nullptr);
-		vkDestroyImageView(device, texture_image_view, nullptr);
 		vkDestroySampler(device, texture_sampler, nullptr);
 
-		vkDestroyBuffer(device, vertex_buffer, nullptr);
-		vkFreeMemory(device, vertex_buffer_memory, nullptr);
+		for (Model& model : models)
+		{
+			vkDestroyImage(device, model.texture_image, nullptr);
+			vkFreeMemory(device, model.texture_image_memory, nullptr);
+			vkDestroyImageView(device, model.texture_image_view, nullptr);
 
-		vkDestroyBuffer(device, index_buffer, nullptr);
-		vkFreeMemory(device, index_buffer_memory, nullptr);
+			vkDestroyBuffer(device, model.vertex_buffer, nullptr);
+			vkFreeMemory(device, model.vertex_buffer_memory, nullptr);
+
+			vkDestroyBuffer(device, model.index_buffer, nullptr);
+			vkFreeMemory(device, model.index_buffer_memory, nullptr);
+		}
 
 		vkDestroyBuffer(device, instance_buffer, nullptr);
 		vkFreeMemory(device, instance_buffer_memory, nullptr);
@@ -2226,7 +2393,7 @@ private:
 
 		float offset_x = x - app->mouse_x;
 		float offset_y = y - app->mouse_y;
-		offset_y = 0;
+//		offset_y = 0;
 		app->mouse_x = x;
 		app->mouse_y = y;
 
@@ -2256,7 +2423,7 @@ private:
 
 	void process_input(GLFWwindow* window)
 	{
-		float camera_speed = 2.5f * dt;
+		float camera_speed = 200.5f * dt;
 		if (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS)
 		{
 			camera_speed *= 5;
