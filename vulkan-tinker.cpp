@@ -28,9 +28,10 @@
 
 #include "vulkan_ctx.hpp"
 #include "model.hpp"
+#include "mesh.hpp"
 #include "vertex.hpp"
 #include "ubo.hpp"
-
+#include "instance.hpp"
 
 #define TINYOBJLOADER_IMPLEMENTATION
 #include <tiny_obj_loader.h>
@@ -46,12 +47,10 @@
 #include <array>
 #include <limits>
 
-
 static void init_crtdbg();
 
-class App
+struct App
 {
-public:
 	void run()
 	{
 		init();
@@ -59,7 +58,6 @@ public:
 		cleanup();
 	}
 
-private:
 	Vulkan::VulkanContext vk_ctx;
 
 	std::vector<Model> models;
@@ -67,16 +65,18 @@ private:
 	std::vector<tinyobj::shape_t> shapes;
 	std::vector<tinyobj::material_t> mats;
 
-	const int instance_count = 1;
-	VkBuffer instance_buffer = VK_NULL_HANDLE;
-	VkDeviceMemory instance_buffer_memory = VK_NULL_HANDLE;
+	// const int instance_count = 1;
+	// VkBuffer instance_buffer = VK_NULL_HANDLE;
+	// VkDeviceMemory instance_buffer_memory = VK_NULL_HANDLE;
+
+	InstanceBuffer instance_buffer;
 
 	const int window_width = 800;
 	const int window_height = 600;
 	bool minimized = false;
 
 	glm::vec3 camera_pos = glm::vec3(0.0f, 0.5f, -3.0f);
-	glm::vec3 camera_front = glm::vec3(0.0f, 0.0f, -1.0f);
+	glm::vec3 camera_front = glm::vec3(0.0f, 0.0f, 0.0f);
 	glm::vec3 camera_up = glm::vec3(0.0f, 1.0f, 0.0f);
 
 	float dt = 0.0f;
@@ -92,16 +92,58 @@ private:
 
 	int current_frame = 0;
 
+	Mesh cube_mesh = {0};
+
+	VkImage texture_image = VK_NULL_HANDLE;
+	VkImageView texture_image_view = VK_NULL_HANDLE;
+	VkDeviceMemory texture_image_memory = VK_NULL_HANDLE;
+
+	std::vector<VkDescriptorSet> descriptor_sets;
+
 	void init()
 	{
 		init_window();
 		vk_ctx.init(window);
-		create_instance_buffer();
+
+		std::vector<glm::mat4> instances;
+
+		float x = 50.0f;
+		float y = 0;
+		float z = 0;
+		for (int i = 0; i < 1; i++)
+		{
+			// glm::mat4 m = glm::rotate(glm::mat4(1.0f), glm::radians(0.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+			// //			m = glm::translate(m, glm::vec3(x, -600.0f, 1800.0f));
+			// m = glm::translate(m, glm::vec3(x, y, z));
+			// glm::mat4 m = glm::mat4(1.0f);
+			// m = glm::scale(m, glm::vec3(1));
+
+			glm::mat4 m = glm::rotate(glm::mat4(1.0f), glm::radians(0.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+			m = glm::translate(m, glm::vec3(x, -600.0f, 1800.0f));
+
+			instances.push_back(m);
+
+			z += 1100;
+		}
+
+		create_instance_buffer(instances, instance_buffer);
+
+		camera_pos = glm::vec3(-2390, 1190, 3219);
+		yaw = -25;
+		pitch = -13;
+
+		const char *path = "assets/textures/white_pixel.png";
+		vk_ctx.create_texture(path, texture_image, texture_image_view, texture_image_memory);
+
+		vk_ctx.allocate_descriptor_sets(descriptor_sets);
+		vk_ctx.create_descriptor_sets(descriptor_sets, texture_image_view);
+
+		create_cube_mesh();
 		load_models();
 
 		IMGUI_CHECKVERSION();
 		ImGui::CreateContext();
-		ImGuiIO& io = ImGui::GetIO();
+		ImGuiIO &io = ImGui::GetIO();
 		io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
 		ImGui::StyleColorsDark();
@@ -110,15 +152,77 @@ private:
 		vk_ctx.init_imgui();
 	}
 
+	void create_cube_mesh()
+	{
+		struct primitive_vertex_t
+		{
+			glm::vec3 pos;
+			glm::vec3 color;
+		};
+
+		std::vector<primitive_vertex_t> primitive_vertices = {
+			// Front face (Z = -500.0)
+			{{-1.0f, -1.0f, -1.0f}, {1.0f, 0.0f, 0.0f}}, // 0: Top-Left
+			{{1.0f, -1.0f, -1.0f}, {0.0f, 1.0f, 0.0f}},  // 1: Top-Right
+			{{1.0f, 1.0f, -1.0f}, {0.0f, 0.0f, 1.0f}},   // 2: Bottom-Right
+			{{-1.0f, 1.0f, -1.0f}, {1.0f, 1.0f, 0.0f}},  // 3: Bottom-Left
+
+			// Back face (Z = 500.0)
+			{{-1.0f, -1.0f, 1.0f}, {1.0f, 0.0f, 1.0f}}, // 4: Top-Left
+			{{1.0f, -1.0f, 1.0f}, {0.0f, 1.0f, 1.0f}},  // 5: Top-Right
+			{{1.0f, 1.0f, 1.0f}, {1.0f, 1.0f, 1.0f}},	  // 6: Bottom-Right
+			{{-1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 0.0f}}	  // 7: Bottom-Left
+		};
+
+		std::vector<uint32_t> indices = {
+			0, 3, 2, 2, 1, 0, // Front Face
+			4, 5, 6, 6, 7, 4, // Back Face
+			4, 0, 1, 1, 5, 4, // Top Face
+			3, 7, 6, 6, 2, 3, // Bottom Face
+			4, 7, 3, 3, 0, 4, // Left Face
+			1, 2, 6, 6, 5, 1  // Right Face
+		};
+
+		std::vector<vertex_t> vertices;
+		for (primitive_vertex_t &prim_v : primitive_vertices)
+		{
+			vertex_t v;
+			v.pos = prim_v.pos * glm::vec3(0.5);
+			v.color = prim_v.color;
+			v.color = glm::vec3(1.0, 0.6, 0.4);
+			v.tex_coord = glm::vec2(0, 0);
+
+			vertices.push_back(v);
+		}
+
+		create_mesh(vertices, indices, cube_mesh);
+		cube_mesh.index_count = indices.size();
+	}
+
+	void create_mesh(std::vector<vertex_t>& vertices, std::vector<uint32_t>& indices, Mesh& mesh)
+	{
+		vk_ctx.create_vertex_buffer(vertices, mesh.vertex_buffer, mesh.vertex_buffer_memory);
+		vk_ctx.create_index_buffer(indices, mesh.index_buffer, mesh.index_buffer_memory);
+	}
+
+	void destroy_mesh(Mesh& mesh)
+	{
+		vkDestroyBuffer(vk_ctx.device, mesh.vertex_buffer, nullptr);
+		vkFreeMemory(vk_ctx.device, mesh.vertex_buffer_memory, nullptr);
+
+		vkDestroyBuffer(vk_ctx.device, mesh.index_buffer, nullptr);
+		vkFreeMemory(vk_ctx.device, mesh.index_buffer_memory, nullptr);
+	}
+
 	void init_window()
 	{
 		glfwInit();
 		glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-//		glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+		//		glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
 
-		GLFWmonitor* monitor = glfwGetPrimaryMonitor();
+		GLFWmonitor *monitor = glfwGetPrimaryMonitor();
 
-		const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+		const GLFWvidmode *mode = glfwGetVideoMode(monitor);
 
 		window = glfwCreateWindow(window_width, window_height, "Vulkan", nullptr, nullptr);
 
@@ -128,12 +232,13 @@ private:
 		glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 	}
 
-	void record_command_buffer(VkCommandBuffer command_buffer, uint32_t image_index, ImDrawData* imgui_draw_data)
+	void record_command_buffer(VkCommandBuffer command_buffer, uint32_t image_index, ImDrawData *imgui_draw_data)
 	{
 		VkCommandBufferBeginInfo begin_info{};
 		begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 
-		if (vkBeginCommandBuffer(command_buffer, &begin_info) != VK_SUCCESS) {
+		if (vkBeginCommandBuffer(command_buffer, &begin_info) != VK_SUCCESS)
+		{
 			throw std::runtime_error("failed to begin recording command buffer!");
 		}
 
@@ -147,9 +252,9 @@ private:
 		VkClearValue clearValues[2] = {};
 
 		// Must follow the same order as the attachments
-		clearValues[0].color = {{1.0f, 1.0f, 1.0f, 1.0f}};
+		clearValues[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
 		clearValues[1].depthStencil = {1.0f, 0};
-		
+
 		renderPassInfo.clearValueCount = sizeof(clearValues) / sizeof(VkClearValue);
 		renderPassInfo.pClearValues = clearValues;
 
@@ -173,34 +278,60 @@ private:
 
 		vkCmdSetViewport(command_buffer, 0, 1, &viewport);
 
-		Model model = models[1];
+		draw_model(command_buffer, models[0]);
+		draw_model(command_buffer, models[1]);
 
-		VkBuffer vertex_buffer = model.vertex_buffer;
-		VkBuffer index_buffer = model.index_buffer;
-
-		VkBuffer vertexBuffers[] = {vertex_buffer, instance_buffer};
-		VkDeviceSize offsets[] = {0, 0};
-
-		vkCmdBindVertexBuffers(command_buffer, 0,
-		sizeof(vertexBuffers) / sizeof(VkBuffer), vertexBuffers, offsets);
-		vkCmdBindIndexBuffer(command_buffer,
-		index_buffer, 0, VK_INDEX_TYPE_UINT32);
-
-		vkCmdBindDescriptorSets(command_buffer,
-		VK_PIPELINE_BIND_POINT_GRAPHICS, vk_ctx.pipeline_layout,
-		0, 1, &(model.descriptor_sets[0]),
-		0, nullptr);
-
-		vkCmdDrawIndexed(command_buffer,
-		model.indices.size(), instance_count, 0, 0, 0);
+		draw_cube(command_buffer);
 
 		ImGui_ImplVulkan_RenderDrawData(imgui_draw_data, command_buffer);
 
 		vkCmdEndRenderPass(command_buffer);
 
-		if (vkEndCommandBuffer(command_buffer) != VK_SUCCESS) {
+		if (vkEndCommandBuffer(command_buffer) != VK_SUCCESS)
+		{
 			throw std::runtime_error("failed to record command buffer!");
 		}
+	}
+
+	void draw_model(VkCommandBuffer command_buffer, Model &model)
+	{
+		VkBuffer vertex_buffer = model.vertex_buffer;
+		VkBuffer index_buffer = model.index_buffer;
+
+		VkBuffer vertexBuffers[] = {vertex_buffer, instance_buffer.buffer};
+		VkDeviceSize offsets[] = {0, 0};
+
+		vkCmdBindVertexBuffers(command_buffer, 0,
+							   sizeof(vertexBuffers) / sizeof(VkBuffer), vertexBuffers, offsets);
+		vkCmdBindIndexBuffer(command_buffer,
+							 index_buffer, 0, VK_INDEX_TYPE_UINT32);
+
+		vkCmdBindDescriptorSets(command_buffer,
+								VK_PIPELINE_BIND_POINT_GRAPHICS, vk_ctx.pipeline_layout,
+								0, 1, &(model.descriptor_sets[0]),
+								0, nullptr);
+
+		vkCmdDrawIndexed(command_buffer,
+						 model.indices.size(), 1, 0, 0, 0);
+	}
+
+	void draw_cube(VkCommandBuffer command_buffer)
+	{
+		VkBuffer vertexBuffers[] = {cube_mesh.vertex_buffer, instance_buffer.buffer};
+		VkDeviceSize offsets[] = {0, 0};
+
+		vkCmdBindVertexBuffers(command_buffer, 0,
+							   sizeof(vertexBuffers) / sizeof(VkBuffer), vertexBuffers, offsets);
+		vkCmdBindIndexBuffer(command_buffer,
+							 cube_mesh.index_buffer, 0, VK_INDEX_TYPE_UINT32);
+
+		vkCmdBindDescriptorSets(command_buffer,
+								VK_PIPELINE_BIND_POINT_GRAPHICS, vk_ctx.pipeline_layout,
+								0, 1, &(descriptor_sets[0]),
+								0, nullptr);
+
+		vkCmdDrawIndexed(command_buffer,
+						 cube_mesh.index_count, 1, 0, 0, 0);
 	}
 
 	void main_loop()
@@ -215,12 +346,6 @@ private:
 			if (!minimized)
 			{
 				process_input(window);
-				glm::vec3 direction;
-				direction.x = cos(glm::radians(yaw)) * cos(glm::radians(pitch));
-				direction.y = sin(glm::radians(pitch));
-				direction.z = sin(glm::radians(yaw)) * cos(glm::radians(pitch));
-
-				camera_front = glm::normalize(direction);
 				draw_frame();
 			}
 		}
@@ -252,34 +377,33 @@ private:
 		ImGui_ImplGlfw_NewFrame();
 		ImGui::NewFrame();
 
-//		ImGui::ShowDemoWindow();
+		ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoDecoration |
+										ImGuiWindowFlags_AlwaysAutoResize |
+										ImGuiWindowFlags_NoSavedSettings |
+										ImGuiWindowFlags_NoFocusOnAppearing |
+										ImGuiWindowFlags_NoNav;
 
-		ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoDecoration | 
-									ImGuiWindowFlags_AlwaysAutoResize | 
-									ImGuiWindowFlags_NoSavedSettings | 
-									ImGuiWindowFlags_NoFocusOnAppearing | 
-									ImGuiWindowFlags_NoNav;
-
-		if (ImGui::Begin("Performance Diagnostics", nullptr, window_flags)) {
+		if (ImGui::Begin("Performance Diagnostics", nullptr, window_flags))
+		{
 			ImGui::Text("VULKAN RENDERER");
 			ImGui::Separator();
-			
+
 			// Grab values directly from ImGui's built-in timing metrics
 			float fps = ImGui::GetIO().Framerate;
 			float ms = 1000.0f / fps;
 
 			ImGui::Text("Performance: %.2f FPS", fps);
 			ImGui::Text("Frame Time:  %.3f ms", ms);
-			ImGui::Text("Cam Pos:     %.3f, %.3f, %.3f", camera_pos.x, camera_pos.y, camera_pos.z);
-			
-			// You can easily push your own engine metrics here later!
-			// ImGui::Text("Draw Calls:  %d", globalDrawCallCount);
+			ImGui::Text("Cam Pos:     %.0f, %.0f, %.0f", camera_pos.x, camera_pos.y, camera_pos.z);
+			ImGui::Text("Cam Front:   %.2f, %.2f, %.2f", camera_front.x, camera_front.y, camera_front.z);
+			ImGui::Text("Yaw:         %.2f, %.2f, %.2f", yaw);
+			ImGui::Text("Pitch:       %.2f, %.2f, %.2f", pitch);
 		}
 		ImGui::End();
 
 		ImGui::Render();
 
-		ImDrawData* draw_data = ImGui::GetDrawData();
+		ImDrawData *draw_data = ImGui::GetDrawData();
 
 		record_command_buffer(vk_ctx.command_buffers[current_frame], image_index, draw_data);
 
@@ -301,7 +425,8 @@ private:
 		submit_info.signalSemaphoreCount = 1;
 		submit_info.pSignalSemaphores = signalSemaphores;
 
-		if (vkQueueSubmit(vk_ctx.graphics_queue, 1, &submit_info, vk_ctx.in_flight_fences[current_frame]) != VK_SUCCESS) {
+		if (vkQueueSubmit(vk_ctx.graphics_queue, 1, &submit_info, vk_ctx.in_flight_fences[current_frame]) != VK_SUCCESS)
+		{
 			throw std::runtime_error("failed to submit draw command buffer!");
 		}
 
@@ -336,7 +461,8 @@ private:
 		auto current = std::chrono::high_resolution_clock::now();
 
 		float time = std::chrono::duration<float,
-		std::chrono::seconds::period>(current - start).count();
+										   std::chrono::seconds::period>(current - start)
+						 .count();
 
 		static float lastFlipTime = time;
 		static float factor = 1;
@@ -344,13 +470,8 @@ private:
 
 		ubo_t ubo{};
 		ubo.model = glm::rotate(glm::mat4(1.0f),
-		glm::radians(degrees),
-		glm::vec3(0.0f, 10.0f, 400.0f));
-
-//		ubo.model = glm::translate(glm::mat4(1.0f),
-//		glm::vec3(0.0f, 0.0f, 0.0f));
-
-//		degrees += 0.2f * factor;
+								glm::radians(degrees),
+								glm::vec3(0.0f, 10.0f, 400.0f));
 
 		if ((time - lastFlipTime) > 5)
 		{
@@ -363,26 +484,38 @@ private:
 		glm::vec3 up = glm::vec3(0.0f, 1.0f, 0.0f);
 		glm::vec3 camera_right = glm::normalize(glm::cross(up, camera_direction));
 
-		/*ubo.view = glm::lookAt(glm::vec3(0.0f, 0.0f, 3.0f),
-		glm::vec3(0.0f, 0.0f, 0.0f),
-		glm::vec3(0.0f, 1.0f, 0.0f));*/
-
-// 		const float radius = 4.0f;
-		// float camX = sin(glfwGetTime()) * radius;
-		// float camZ = cos(glfwGetTime()) * radius;
 		glm::mat4 view;
 		view = glm::lookAt(camera_pos,
-		camera_pos + camera_front, camera_up);
+						   camera_pos + camera_front, camera_up);
 
 		ubo.view = view;
 
 		ubo.proj = glm::perspective(glm::radians(60.0f),
-		vk_ctx.swap_chain_extent.width / (float)vk_ctx.swap_chain_extent.height,
-		0.1f, 10000.0f);
+									vk_ctx.swap_chain_extent.width / (float)vk_ctx.swap_chain_extent.height,
+									0.1f, 10000.0f);
 
 		ubo.proj[1][1] *= -1; // GLM y is flipped
 		memcpy(vk_ctx.uniform_buffers_mapped[currentImage], &ubo,
-		sizeof(ubo));
+			   sizeof(ubo));
+	}
+
+	void destroy_instance_buffer(InstanceBuffer& instance_buffer)
+	{
+		vkDestroyBuffer(vk_ctx.device, instance_buffer.buffer, nullptr);
+		vkFreeMemory(vk_ctx.device, instance_buffer.buffer_memory, nullptr);
+	}
+
+	void destroy_model(Model& model)
+	{
+		vkDestroyImage(vk_ctx.device, model.texture_image, nullptr);
+		vkFreeMemory(vk_ctx.device, model.texture_image_memory, nullptr);
+		vkDestroyImageView(vk_ctx.device, model.texture_image_view, nullptr);
+
+		vkDestroyBuffer(vk_ctx.device, model.vertex_buffer, nullptr);
+		vkFreeMemory(vk_ctx.device, model.vertex_buffer_memory, nullptr);
+
+		vkDestroyBuffer(vk_ctx.device, model.index_buffer, nullptr);
+		vkFreeMemory(vk_ctx.device, model.index_buffer_memory, nullptr);
 	}
 
 	void cleanup()
@@ -393,20 +526,18 @@ private:
 
 		ImGui::DestroyContext();
 
-		vkDestroyBuffer(vk_ctx.device, instance_buffer, nullptr);
-		vkFreeMemory(vk_ctx.device, instance_buffer_memory, nullptr);
-		for (Model& model : models)
+		destroy_instance_buffer(instance_buffer);
+
+		for (Model &model : models)
 		{
-			vkDestroyImage(vk_ctx.device, model.texture_image, nullptr);
-			vkFreeMemory(vk_ctx.device, model.texture_image_memory, nullptr);
-			vkDestroyImageView(vk_ctx.device, model.texture_image_view, nullptr);
-
-			vkDestroyBuffer(vk_ctx.device, model.vertex_buffer, nullptr);
-			vkFreeMemory(vk_ctx.device, model.vertex_buffer_memory, nullptr);
-
-			vkDestroyBuffer(vk_ctx.device, model.index_buffer, nullptr);
-			vkFreeMemory(vk_ctx.device, model.index_buffer_memory, nullptr);
+			destroy_model(model);
 		}
+
+		destroy_mesh(cube_mesh);
+
+		vkDestroyImage(vk_ctx.device, texture_image, nullptr);
+		vkFreeMemory(vk_ctx.device, texture_image_memory, nullptr);
+		vkDestroyImageView(vk_ctx.device, texture_image_view, nullptr);
 
 		vk_ctx.destroy();
 
@@ -414,7 +545,7 @@ private:
 		glfwTerminate();
 	}
 
-	Model load_model(const tinyobj::shape_t& shape, const tinyobj::material_t& mat)
+	Model load_model(const tinyobj::shape_t &shape, const tinyobj::material_t &mat)
 	{
 		Model model;
 		model.attrib = attrib;
@@ -422,7 +553,7 @@ private:
 
 		std::string path = "assets/workshop/" + mat.diffuse_texname;
 		vk_ctx.create_texture(path.c_str(), model.texture_image, model.texture_image_view,
-		model.texture_image_memory);
+							  model.texture_image_memory);
 
 		vk_ctx.create_vertex_buffer(model.vertices, model.vertex_buffer, model.vertex_buffer_memory);
 		vk_ctx.create_index_buffer(model.indices, model.index_buffer, model.index_buffer_memory);
@@ -439,7 +570,7 @@ private:
 		{
 			std::string err;
 			if (!tinyobj::LoadObj(&attrib, &shapes, &mats, &err,
-				"assets/workshop/ps1-style-workshop.obj", "assets/workshop/"))
+								  "assets/workshop/ps1-style-workshop.obj", "assets/workshop/"))
 			{
 				throw std::runtime_error(err);
 			}
@@ -453,50 +584,37 @@ private:
 		models.push_back(load_model(shapes[1], mats[1]));
 	}
 
-	void create_instance_buffer()
+	void create_instance_buffer(std::vector<glm::mat4>& instances, InstanceBuffer& instance_buffer)
 	{
-		std::vector<glm::mat4> instances;
-
-		float x = 50.0f;
-		for (int i = 0; i < instance_count; i++)
-		{
-			glm::mat4 m = glm::rotate(glm::mat4(1.0f), glm::radians(0.0f), glm::vec3(1.0f, 0.0f, 0.0f));
-			m = glm::translate(m, glm::vec3(x, -600.0f, 1800.0f));
-
-			instances.push_back(m);
-
-			x += 1.5f;
-		}
-
 		VkDeviceSize size = sizeof(instances[0]) * instances.size();
 
 		VkBuffer stagingBuffer = VK_NULL_HANDLE;
 		VkDeviceMemory stagingBufferMemory = VK_NULL_HANDLE;
 		vk_ctx.createBuffer(stagingBuffer, stagingBufferMemory,
-		size,
-		VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+							size,
+							VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+							VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-		void* memory;
+		void *memory;
 		vkMapMemory(vk_ctx.device, stagingBufferMemory, 0, VK_WHOLE_SIZE, 0, &memory);
 		memcpy(memory, instances.data(), size);
 		vkUnmapMemory(vk_ctx.device, stagingBufferMemory);
 
-		vk_ctx.createBuffer(instance_buffer, instance_buffer_memory,
-		size,
-		(VkBufferUsageFlagBits)(VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT), 
-		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		vk_ctx.createBuffer(instance_buffer.buffer, instance_buffer.buffer_memory,
+							size,
+							(VkBufferUsageFlagBits)(VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT),
+							VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-		vk_ctx.copyBuffer(stagingBuffer, instance_buffer, size);
+		vk_ctx.copyBuffer(stagingBuffer, instance_buffer.buffer, size);
 
 		vkDestroyBuffer(vk_ctx.device, stagingBuffer, nullptr);
 		vkFreeMemory(vk_ctx.device, stagingBufferMemory, nullptr);
 	}
 
-	static void framebuffer_resize_callback(GLFWwindow* window, int width, int height)
+	static void framebuffer_resize_callback(GLFWwindow *window, int width, int height)
 	{
-		auto app = reinterpret_cast<App*>(glfwGetWindowUserPointer(window));
-	    app->vk_ctx.framebuffer_resized = true;
+		auto app = reinterpret_cast<App *>(glfwGetWindowUserPointer(window));
+		app->vk_ctx.framebuffer_resized = true;
 
 		if ((width == 0) || (height == 0))
 		{
@@ -508,9 +626,9 @@ private:
 		}
 	}
 
-	static void mouse_callback(GLFWwindow* window, double x, double y)
+	static void mouse_callback(GLFWwindow *window, double x, double y)
 	{
-		App* app = static_cast<App*>(glfwGetWindowUserPointer(window));
+		App *app = static_cast<App *>(glfwGetWindowUserPointer(window));
 
 		static bool first_time = true;
 		if (first_time)
@@ -521,8 +639,7 @@ private:
 		}
 
 		float offset_x = x - app->mouse_x;
-		float offset_y = y - app->mouse_y;
-//		offset_y = 0;
+		float offset_y = -(y - app->mouse_y);
 		app->mouse_x = x;
 		app->mouse_y = y;
 
@@ -541,16 +658,9 @@ private:
 		{
 			app->pitch = -89.0f;
 		}
-
-		glm::vec3 direction;
-		direction.x = cos(glm::radians(app->yaw)) * cos(glm::radians(app->pitch));
-		direction.y = sin(glm::radians(app->pitch));
-		direction.z = sin(glm::radians(app->yaw)) * cos(glm::radians(app->pitch));
-
-		app->camera_front = glm::normalize(direction);
 	}
 
-	void process_input(GLFWwindow* window)
+	void process_input(GLFWwindow *window)
 	{
 		float camera_speed = 200.5f * dt;
 		if (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS)
@@ -574,6 +684,22 @@ private:
 		{
 			camera_pos += glm::normalize(glm::cross(camera_front, camera_up)) * camera_speed;
 		}
+
+		if (glfwGetKey(window, GLFW_KEY_RIGHT))
+		{
+			yaw += 0.1f;
+		}
+		if (glfwGetKey(window, GLFW_KEY_LEFT))
+		{
+			yaw -= 0.1f;
+		}
+
+		glm::vec3 direction;
+		direction.x = cos(glm::radians(yaw)) * cos(glm::radians(pitch));
+		direction.y = sin(glm::radians(pitch));
+		direction.z = sin(glm::radians(yaw)) * cos(glm::radians(pitch));
+
+		camera_front = glm::normalize(direction);
 	}
 };
 
